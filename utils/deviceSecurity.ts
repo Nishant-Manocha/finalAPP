@@ -199,7 +199,7 @@ export class DeviceSecurityService {
     const threats: string[] = [];
     const details: Record<string, any> = {};
 
-    if (typeof __DEV__ !== 'undefined' && __DEV__) {
+    if (SECURITY_CONFIG.DEVICE_SECURITY.DEVELOPMENT_MODE_DETECTION_ENABLED && typeof __DEV__ !== 'undefined' && __DEV__) {
       threats.push('Application running in development mode');
       details.developmentMode = true;
     }
@@ -245,14 +245,14 @@ export class DeviceSecurityService {
     if (Platform.OS === 'android') {
       const buildProps = await this.getBuildProperties();
       console.log('[DeviceSecurityService] Android build properties for debug check:', buildProps);
-      if ((buildProps as any).ro_debuggable === '1') {
+      if (SECURITY_CONFIG.DEVICE_SECURITY.DEBUG_MODE_DETECTION_ENABLED && (buildProps as any).ro_debuggable === '1') {
         threats.push('Application is debuggable');
         details.debuggable = true;
       }
     }
 
     try {
-      if (typeof (global as any).__REACT_DEVTOOLS_GLOBAL_HOOK__ !== 'undefined') {
+      if (SECURITY_CONFIG.DEVICE_SECURITY.DEBUG_MODE_DETECTION_ENABLED && typeof (global as any).__REACT_DEVTOOLS_GLOBAL_HOOK__ !== 'undefined') {
         threats.push('React DevTools detected');
         details.reactDevTools = true;
       }

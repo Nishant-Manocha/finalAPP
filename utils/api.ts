@@ -4,7 +4,12 @@
 import { secureApiService } from './apiSecurity';
 import { SECURITY_CONFIG } from './securityConfig';
 
-export const API_BASE_URL = process.env.SERVER_URL || 'http://localhost:5000/api';
+export const API_BASE_URL =
+  process.env.SERVER_URL || (__DEV__ ? 'http://localhost:5000/api' : SECURITY_CONFIG.API.BASE_URL);
+
+if (!__DEV__ && !API_BASE_URL.startsWith('https://')) {
+  throw new Error('Plain HTTP is blocked in production');
+}
 
 // Ensure secure client uses the same base URL origin
 try {

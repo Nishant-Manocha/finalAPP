@@ -43,6 +43,13 @@ class MainApplication : Application(), ReactApplication {
   override fun onCreate() {
     super.onCreate()
     SoLoader.init(this, OpenSourceMergedSoMapping)
+    // Set SSL pinning OkHttp client for all RN network calls
+    try {
+      com.facebook.react.modules.network.OkHttpClientProvider.setOkHttpClientFactory(
+        PinnedOkHttpFactory(this)
+      )
+    } catch (_: Throwable) {}
+
     if (BuildConfig.IS_NEW_ARCHITECTURE_ENABLED) {
       // If you opted-in for the New Architecture, we load the native entry point for this app.
       load()

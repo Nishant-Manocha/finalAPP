@@ -11,4 +11,19 @@
 -keep class com.swmansion.reanimated.** { *; }
 -keep class com.facebook.react.turbomodule.** { *; }
 
-# Add any project specific keep options here:
+# React Native core
+-keep class com.facebook.react.** { *; }
+-dontwarn com.facebook.react.**
+
+# OkHttp/Okio
+-keep class okhttp3.** { *; }
+-keep class okio.** { *; }
+-dontwarn okhttp3.**
+-dontwarn okio.**
+
+# Expo modules
+-keep class expo.modules.** { *; }
+-dontwarn expo.modules.**
+
+# SSL Pinning
+-keep class com.pankaj465.FinGuard.PinnedOkHttpFactory { *; }

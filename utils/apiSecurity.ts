@@ -53,23 +53,17 @@ export class SecureApiService {
           await this.checkRateLimit(config.url || '');
         }
 
-        // Encrypt request data if enabled
-        if (SECURITY_CONFIG.API.ENCRYPTION.ENABLED && config.data) {
-          const sharedSecret = SECURITY_CONFIG.API.ENCRYPTION.SHARED_SECRET || process.env.API_SHARED_SECRET;
-          if (sharedSecret) {
-            // Use shared-secret AES for transport-level payload encryption
-            const { payload, ivBase64 } = await this.encryptWithSharedSecret(
-              typeof config.data === 'string' ? config.data : JSON.stringify(config.data),
-              sharedSecret
-            );
-            hdrs['X-Encrypted'] = '1';
-            hdrs['X-IV'] = ivBase64;
-            hdrs['Content-Type'] = 'text/plain';
-            config.data = payload;
-          } else {
-            // Fallback to device key encryption
-            config.data = await this.encryptRequestData(config.data);
-          }
+        // Encrypt request data only with shared secret
+        const sharedSecret = SECURITY_CONFIG.API.ENCRYPTION.SHARED_SECRET || process.env.API_SHARED_SECRET;
+        if (SECURITY_CONFIG.API.ENCRYPTION.ENABLED && sharedSecret && config.data) {
+          const { payload, ivBase64 } = await this.encryptWithSharedSecret(
+            typeof config.data === 'string' ? config.data : JSON.stringify(config.data),
+            sharedSecret
+          );
+          hdrs['X-Encrypted'] = '1';
+          hdrs['X-IV'] = ivBase64;
+          hdrs['Content-Type'] = 'text/plain';
+          config.data = payload;
         }
 
         config.headers = hdrs as any;
@@ -83,18 +77,16 @@ export class SecureApiService {
     // Response interceptor
     this.apiClient.interceptors.response.use(
       async (response) => {
-        // Decrypt response data if enabled
-        if (SECURITY_CONFIG.API.ENCRYPTION.ENABLED && response.data) {
-          const sharedSecret = SECURITY_CONFIG.API.ENCRYPTION.SHARED_SECRET || process.env.API_SHARED_SECRET;
-          const isEncrypted = response.headers && (response.headers['x-encrypted'] === '1' || response.headers['X-Encrypted'] === '1');
-          if (sharedSecret && isEncrypted && typeof response.data === 'string') {
-            response.data = await this.decryptWithSharedSecret(response.data, sharedSecret, response.headers['x-iv'] || response.headers['X-IV']);
-          } else {
-            response.data = await this.decryptResponseData(response.data);
-          }
+        // Decrypt response data only when header is present and shared secret configured
+        const sharedSecret = SECURITY_CONFIG.API.ENCRYPTION.SHARED_SECRET || process.env.API_SHARED_SECRET;
+        const isEncrypted = !!(response.headers && ((response.headers['x-encrypted'] as any) === '1' || (response.headers['X-Encrypted'] as any) === '1'));
+        const ivHeader = (response.headers && ((response.headers['x-iv'] as any) || (response.headers['X-IV'] as any))) as string | undefined;
+
+        if (SECURITY_CONFIG.API.ENCRYPTION.ENABLED && sharedSecret && isEncrypted && typeof response.data === 'string') {
+          response.data = await this.decryptWithSharedSecret(response.data, sharedSecret, ivHeader);
         }
 
-        // Verify response integrity
+        // Verify response integrity if header present
         if (response.headers['x-response-hash']) {
           const isValid = await this.verifyResponseIntegrity(response);
           if (!isValid) {

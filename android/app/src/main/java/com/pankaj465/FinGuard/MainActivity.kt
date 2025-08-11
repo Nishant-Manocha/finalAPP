@@ -15,7 +15,27 @@ class MainActivity : ReactActivity() {
     // Set the theme to AppTheme BEFORE onCreate to support
     // coloring the background, status bar, and navigation bar.
     // This is required for expo-splash-screen.
-    setTheme(R.style.AppTheme);
+    setTheme(R.style.AppTheme)
+
+    // Block screenshots and recordings
+    try {
+      window.setFlags(
+        android.view.WindowManager.LayoutParams.FLAG_SECURE,
+        android.view.WindowManager.LayoutParams.FLAG_SECURE
+      )
+    } catch (_: Throwable) {}
+
+    // Block if device is rooted/emulated or dev mode is enabled (in release)
+    try {
+      val isUntrusted = SecurityUtils.isDeviceRooted(this) || SecurityUtils.isEmulator() || (!BuildConfig.DEBUG && SecurityUtils.isDeveloperModeEnabled(this))
+      if (isUntrusted) {
+        android.widget.Toast.makeText(this, "This device is not supported for security reasons.", android.widget.Toast.LENGTH_LONG).show()
+        finish()
+        kotlin.system.exitProcess(0)
+        return
+      }
+    } catch (_: Throwable) {}
+
     super.onCreate(null)
   }
 

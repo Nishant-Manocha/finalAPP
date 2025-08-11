@@ -66,15 +66,17 @@ DEVICE_SECURITY: {
     REQUIRED: [
       'android.permission.INTERNET',
       'android.permission.ACCESS_NETWORK_STATE',
-      'android.permission.CAMERA',
-      'android.permission.READ_EXTERNAL_STORAGE',
-      'android.permission.WRITE_EXTERNAL_STORAGE',
       'android.permission.ACCESS_FINE_LOCATION',
       'android.permission.ACCESS_COARSE_LOCATION',
     ],
     OPTIONAL: [
+      'android.permission.CAMERA',
+      'android.permission.READ_EXTERNAL_STORAGE',
+      'android.permission.WRITE_EXTERNAL_STORAGE',
       'android.permission.VIBRATE',
       'android.permission.WAKE_LOCK',
+      'android.permission.RECORD_AUDIO',
+      'android.permission.SYSTEM_ALERT_WINDOW',
     ],
   },
 

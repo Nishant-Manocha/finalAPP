@@ -1,3 +1,4 @@
+import 'react-native-get-random-values';
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import * as Crypto from 'expo-crypto';
 import { SECURITY_CONFIG, getSecurityHeaders } from './securityConfig';
@@ -114,7 +115,17 @@ export class SecureApiService {
 
   // Shared-secret AES-256-CBC helpers
   private async encryptWithSharedSecret(plaintext: string, secret: string): Promise<{ payload: string; ivBase64: string }> {
-    const ivWordArray = CryptoJS.lib.WordArray.random(16);
+    const ivBytes = await Crypto.getRandomBytesAsync(16);
+    const words: number[] = [];
+    for (let i = 0; i < ivBytes.length; i += 4) {
+      words.push(
+        ((ivBytes[i] || 0) << 24) |
+          ((ivBytes[i + 1] || 0) << 16) |
+          ((ivBytes[i + 2] || 0) << 8) |
+          (ivBytes[i + 3] || 0)
+      );
+    }
+    const ivWordArray = CryptoJS.lib.WordArray.create(words, ivBytes.length);
     const keyWordArray = CryptoJS.SHA256(secret);
     const cipherParams = CryptoJS.AES.encrypt(plaintext, keyWordArray, {
       iv: ivWordArray,

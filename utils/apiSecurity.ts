@@ -1,5 +1,6 @@
 import 'react-native-get-random-values';
-import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
+import {fetch as rnFetch} from 'react-native-ssl-pinning';
+import type { AxiosRequestConfig, AxiosResponse } from 'axios';
 import * as Crypto from 'expo-crypto';
 import { SECURITY_CONFIG, getSecurityHeaders } from './securityConfig';
 import { encryptionService } from './encryption';
@@ -15,18 +16,15 @@ export interface SecureApiConfig {
 
 export class SecureApiService {
   private static instance: SecureApiService;
-  private apiClient: AxiosInstance;
+  private baseURL: string;
+  private defaultTimeout: number;
+  private authToken?: string;
   private requestCount: Map<string, number> = new Map();
   private lastRequestTime: Map<string, number> = new Map();
 
   private constructor() {
-    this.apiClient = axios.create({
-      baseURL: SECURITY_CONFIG.API.BASE_URL,
-      timeout: SECURITY_CONFIG.API.TIMEOUT,
-      headers: getSecurityHeaders(),
-    });
-
-    this.setupInterceptors();
+    this.baseURL = SECURITY_CONFIG.API.BASE_URL;
+    this.defaultTimeout = SECURITY_CONFIG.API.TIMEOUT;
   }
 
   public static getInstance(): SecureApiService {
@@ -36,150 +34,145 @@ export class SecureApiService {
     return SecureApiService.instance;
   }
 
-  // Setup request and response interceptors
-  private setupInterceptors(): void {
-    // Request interceptor
-    this.apiClient.interceptors.request.use(
-      async (config) => {
-        // Add security headers
-        const hdrs: Record<string, any> = {
-          ...(config.headers as any),
-          ...getSecurityHeaders(),
-          'X-Request-ID': await this.generateRequestId(),
-          'X-Timestamp': Date.now().toString(),
-        };
+  private async prepareRequest(config: AxiosRequestConfig): Promise<AxiosRequestConfig> {
+    // Add security headers
+    const hdrs: Record<string, any> = {
+      ...(config.headers as any),
+      ...getSecurityHeaders(),
+      'X-Request-ID': await this.generateRequestId(),
+      'X-Timestamp': Date.now().toString(),
+    };
 
-        // Rate limiting check
-        if (SECURITY_CONFIG.API.RATE_LIMIT.ENABLED) {
-          await this.checkRateLimit(config.url || '');
-        }
+    if (this.authToken) {
+      hdrs['Authorization'] = `Bearer ${this.authToken}`;
+    }
 
-        // Transport encryption ONLY when shared secret is set
-        // Transport encryption ONLY when shared secret is set
-        const sharedSecret =
-          SECURITY_CONFIG.API.ENCRYPTION.SHARED_SECRET || process.env.API_SHARED_SECRET;
-        console.log('[TX] sharedSecret=', sharedSecret);
+    // Rate limiting check
+    if (SECURITY_CONFIG.API.RATE_LIMIT.ENABLED) {
+      await this.checkRateLimit(config.url || '');
+    }
 
-        if (SECURITY_CONFIG.API.ENCRYPTION.ENABLED && sharedSecret) {
-          // Always request encrypted responses
-          hdrs['X-Encrypted'] = '1';
+    // Transport encryption ONLY when shared secret is set
+    // Transport encryption ONLY when shared secret is set
+    const sharedSecret =
+      SECURITY_CONFIG.API.ENCRYPTION.SHARED_SECRET || process.env.API_SHARED_SECRET;
+    console.log('[TX] sharedSecret=', sharedSecret);
 
-          if (config.data) {
-            // Encrypt request body when present (POST/PUT)
-            const { payload, ivBase64 } = await this.encryptWithSharedSecret(
-              typeof config.data === 'string' ? config.data : JSON.stringify(config.data),
-              sharedSecret
-            );
-            hdrs['X-IV'] = ivBase64;
-            hdrs['Content-Type'] = 'text/plain';
-            config.data = payload;
+    if (SECURITY_CONFIG.API.ENCRYPTION.ENABLED && sharedSecret) {
+      // Always request encrypted responses
+      hdrs['X-Encrypted'] = '1';
 
-            console.log(
-              '[TX] encrypted=1',
-              'iv.len=', ivBase64?.length,
-              'ctype=', hdrs['Content-Type'],
-              'body.sample=', String(config.data).slice(0, 60)
-            );
-          } else {
-            // GET/DELETE: no body, but we still want encrypted response
-            console.log('[TX] encrypted=1', 'no-body');
-          }
-        } else {
-          console.log(
-            '[TX] encrypted=0',
-            'ctype=',
-            (hdrs['Content-Type'] || (config.headers as any)?.['Content-Type']) ?? 'application/json'
-          );
-        }
-
-
-        config.headers = hdrs as any;
-        return config;
-      },
-      (error) => Promise.reject(error)
-    );
-
-    // Response interceptor
-    this.apiClient.interceptors.response.use(
-      async (response) => {
-        // Decrypt ONLY if server marked the response as encrypted and shared secret is set
-        const sharedSecret =
-          SECURITY_CONFIG.API.ENCRYPTION.SHARED_SECRET || process.env.API_SHARED_SECRET;
-        const isEncrypted =
-          !!(
-            response.headers &&
-            ((response.headers['x-encrypted'] as any) === '1' ||
-              (response.headers['X-Encrypted'] as any) === '1')
-          );
-        const ivHeader = (response.headers &&
-          ((response.headers['x-iv'] as any) ||
-            (response.headers['X-IV'] as any))) as string | undefined;
-
-        // RX header log
-        console.log(
-          '[RX] header.encrypted=', isEncrypted,
-          'hasIV=', !!ivHeader,
-          'data.type=', typeof response.data
+      if (config.data) {
+        // Encrypt request body when present (POST/PUT)
+        const { payload, ivBase64 } = await this.encryptWithSharedSecret(
+          typeof config.data === 'string' ? config.data : JSON.stringify(config.data),
+          sharedSecret
         );
+        hdrs['X-IV'] = ivBase64;
+        hdrs['Content-Type'] = 'text/plain';
+        config.data = payload;
 
-        if (SECURITY_CONFIG.API.ENCRYPTION.ENABLED && sharedSecret && isEncrypted && typeof response.data === 'string') {
-          const beforeSample = String(response.data).slice(0, 60);
-          response.data = await this.decryptWithSharedSecret(response.data, sharedSecret, ivHeader);
-          // RX decrypted log
-          console.log(
-            '[RX] decrypted',
-            'before.sample=', beforeSample,
-            'after.type=', typeof response.data
-          );
-        } else {
-          // RX plaintext log
-          console.log('[RX] plaintext', 'type=', typeof response.data);
-        }
-
-        // Verify response integrity if header present
-        if (response.headers['x-response-hash']) {
-          const isValid = await this.verifyResponseIntegrity(response);
-          if (!isValid) {
-            throw new Error('Response integrity check failed');
-          }
-        }
-
-        return response;
-      },
-      async (error) => {
-        // Detailed client error log
-        try {
-          const resp = error.response;
-          const reqCfg = error.config || {};
-          const headers = (resp && resp.headers) || {};
-          const reqId = headers['x-request-id'] || reqCfg.headers?.['X-Request-ID'];
-          const isEncrypted = headers['x-encrypted'] === '1' || headers['X-Encrypted'] === '1';
-          const iv = headers['x-iv'] || headers['X-IV'];
-
-          console.error('[CLIENT ERR]', {
-            status: resp?.status,
-            url: reqCfg?.baseURL ? (reqCfg.baseURL + reqCfg.url) : reqCfg.url,
-            method: reqCfg?.method,
-            reqId,
-            isEncrypted,
-            hasIV: !!iv,
-            respType: typeof resp?.data,
-            respDataSample: typeof resp?.data === 'string' ? String(resp.data).slice(0, 120) : undefined,
-            respJsonKeys: resp?.data && typeof resp.data === 'object' ? Object.keys(resp.data) : undefined,
-          });
-        } catch (e) {
-          console.error('[CLIENT ERR] logging failure', e);
-        }
-
-        if (error.code === 'CERTIFICATE_VERIFY_FAILED') {
-          throw new Error('SSL certificate verification failed');
-        }
-        if (error.response?.status === 429) {
-          throw new Error('Rate limit exceeded');
-        }
-        return Promise.reject(error);
+        console.log(
+          '[TX] encrypted=1',
+          'iv.len=', ivBase64?.length,
+          'ctype=', hdrs['Content-Type'],
+          'body.sample=', String(config.data).slice(0, 60)
+        );
+      } else {
+        // GET/DELETE: no body, but we still want encrypted response
+        console.log('[TX] encrypted=1', 'no-body');
       }
+    } else {
+      console.log(
+        '[TX] encrypted=0',
+        'ctype=',
+        (hdrs['Content-Type'] || (config.headers as any)?.['Content-Type']) ?? 'application/json'
+      );
+    }
+
+
+    config.headers = hdrs as any;
+    return config;
+  }
+
+  private async handleResponse<T>(response: AxiosResponse<T>): Promise<AxiosResponse<T>> {
+    // Decrypt ONLY if server marked the response as encrypted and shared secret is set
+    const sharedSecret =
+      SECURITY_CONFIG.API.ENCRYPTION.SHARED_SECRET || process.env.API_SHARED_SECRET;
+    const isEncrypted =
+      !!(
+        response.headers &&
+        ((response.headers['x-encrypted'] as any) === '1' ||
+          (response.headers['X-Encrypted'] as any) === '1')
+      );
+    const ivHeader = (response.headers &&
+      ((response.headers['x-iv'] as any) ||
+        (response.headers['X-IV'] as any))) as string | undefined;
+
+    // RX header log
+    console.log(
+      '[RX] header.encrypted=', isEncrypted,
+      'hasIV=', !!ivHeader,
+      'data.type=', typeof response.data
     );
+
+    if (SECURITY_CONFIG.API.ENCRYPTION.ENABLED && sharedSecret && isEncrypted && typeof response.data === 'string') {
+      const beforeSample = String(response.data).slice(0, 60);
+      response.data = await this.decryptWithSharedSecret(response.data as any, sharedSecret, ivHeader) as any;
+      // RX decrypted log
+      console.log(
+        '[RX] decrypted',
+        'before.sample=', beforeSample,
+        'after.type=', typeof response.data
+      );
+    } else {
+      // RX plaintext log
+      console.log('[RX] plaintext', 'type=', typeof response.data);
+    }
+
+    // Verify response integrity if header present
+    if (response.headers['x-response-hash']) {
+      const isValid = await this.verifyResponseIntegrity(response as any);
+      if (!isValid) {
+        throw new Error('Response integrity check failed');
+      }
+    }
+
+    return response;
+  }
+
+  private handleResponseError(error: any): Error {
+    // Detailed client error log
+    try {
+      const resp = error.response;
+      const reqCfg = error.config || {};
+      const headers = (resp && resp.headers) || {};
+      const reqId = headers['x-request-id'] || reqCfg.headers?.['X-Request-ID'];
+      const isEncrypted = headers['x-encrypted'] === '1' || headers['X-Encrypted'] === '1';
+      const iv = headers['x-iv'] || headers['X-IV'];
+
+      console.error('[CLIENT ERR]', {
+        status: resp?.status,
+        url: reqCfg?.baseURL ? (reqCfg.baseURL + reqCfg.url) : reqCfg.url,
+        method: reqCfg?.method,
+        reqId,
+        isEncrypted,
+        hasIV: !!iv,
+        respType: typeof resp?.data,
+        respDataSample: typeof resp?.data === 'string' ? String(resp.data).slice(0, 120) : undefined,
+        respJsonKeys: resp?.data && typeof resp.data === 'object' ? Object.keys(resp.data) : undefined,
+      });
+    } catch (e) {
+      console.error('[CLIENT ERR] logging failure', e);
+    }
+
+    if (error.code === 'CERTIFICATE_VERIFY_FAILED') {
+      throw new Error('SSL certificate verification failed');
+    }
+    if (error.response?.status === 429) {
+      throw new Error('Rate limit exceeded');
+    }
+    return error;
   }
 
   // Shared-secret AES-256-CBC helpers (IV from Expo RNG)
@@ -325,37 +318,85 @@ export class SecureApiService {
   // Secure GET/POST/PUT/DELETE
   public async secureGet<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
     try {
-      const response = await this.apiClient.get<T>(url, config);
-      return response.data as unknown as T;
-    } catch (error) {
-      throw this.handleApiError(error);
+      const finalConfig = await this.prepareRequest({ ...(config || {}), url });
+      const res = await rnFetch(this.baseURL + url, {
+        method: 'GET',
+        timeoutInterval: (finalConfig.timeout as any) || this.defaultTimeout,
+        headers: finalConfig.headers as any,
+        sslPinning: {
+          certs: ['api_finguard_prod', 'api_finguard_backup', 'api_finguard_staging']
+        },
+        trustSelfSigned: false,
+      });
+      const headers: any = res.headers || {};
+      const text = (res as any).bodyString as string;
+      const response: AxiosResponse<any> = { data: text, status: res.status, statusText: String(res.status), headers, config: finalConfig as any, request: {} };
+      const handled = await this.handleResponse(response);
+      return handled.data as T;
+    } catch (error: any) {
+      throw this.handleApiError(this.handleResponseError(error));
     }
   }
 
   public async securePost<T>(url: string, data?: any, config?: AxiosRequestConfig): Promise<T> {
     try {
-      const response = await this.apiClient.post<T>(url, data, config);
-      return response.data as unknown as T;
-    } catch (error) {
-      throw this.handleApiError(error);
+      const finalConfig = await this.prepareRequest({ ...(config || {}), url, data, method: 'POST' });
+      const res = await rnFetch(this.baseURL + url, {
+        method: 'POST',
+        timeoutInterval: (finalConfig.timeout as any) || this.defaultTimeout,
+        headers: finalConfig.headers as any,
+        body: finalConfig.data as any,
+        sslPinning: { certs: ['api_finguard_prod', 'api_finguard_backup', 'api_finguard_staging'] },
+        trustSelfSigned: false,
+      });
+      const headers: any = res.headers || {};
+      const text = (res as any).bodyString as string;
+      const response: AxiosResponse<any> = { data: text, status: res.status, statusText: String(res.status), headers, config: finalConfig as any, request: {} };
+      const handled = await this.handleResponse(response);
+      return handled.data as T;
+    } catch (error: any) {
+      throw this.handleApiError(this.handleResponseError(error));
     }
   }
 
   public async securePut<T>(url: string, data?: any, config?: AxiosRequestConfig): Promise<T> {
     try {
-      const response = await this.apiClient.put<T>(url, data, config);
-      return response.data as unknown as T;
-    } catch (error) {
-      throw this.handleApiError(error);
+      const finalConfig = await this.prepareRequest({ ...(config || {}), url, data, method: 'PUT' });
+      const res = await rnFetch(this.baseURL + url, {
+        method: 'PUT',
+        timeoutInterval: (finalConfig.timeout as any) || this.defaultTimeout,
+        headers: finalConfig.headers as any,
+        body: finalConfig.data as any,
+        sslPinning: { certs: ['api_finguard_prod', 'api_finguard_backup', 'api_finguard_staging'] },
+        trustSelfSigned: false,
+      });
+      const headers: any = res.headers || {};
+      const text = (res as any).bodyString as string;
+      const response: AxiosResponse<any> = { data: text, status: res.status, statusText: String(res.status), headers, config: finalConfig as any, request: {} };
+      const handled = await this.handleResponse(response);
+      return handled.data as T;
+    } catch (error: any) {
+      throw this.handleApiError(this.handleResponseError(error));
     }
   }
 
   public async secureDelete<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
     try {
-      const response = await this.apiClient.delete<T>(url, config);
-      return response.data as unknown as T;
-    } catch (error) {
-      throw this.handleApiError(error);
+      const finalConfig = await this.prepareRequest({ ...(config || {}), url, method: 'DELETE' });
+      const res = await rnFetch(this.baseURL + url, {
+        method: 'DELETE',
+        timeoutInterval: (finalConfig.timeout as any) || this.defaultTimeout,
+        headers: finalConfig.headers as any,
+        sslPinning: { certs: ['api_finguard_prod', 'api_finguard_backup', 'api_finguard_staging'] },
+        trustSelfSigned: false,
+      });
+      const headers: any = res.headers || {};
+      const text = (res as any).bodyString as string;
+      const response: AxiosResponse<any> = { data: text, status: res.status, statusText: String(res.status), headers, config: finalConfig as any, request: {} };
+      const handled = await this.handleResponse(response);
+      return handled.data as T;
+    } catch (error: any) {
+      throw this.handleApiError(this.handleResponseError(error));
     }
   }
 
@@ -386,20 +427,18 @@ export class SecureApiService {
   }
 
   public setAuthToken(token: string): void {
-    this.apiClient.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+    this.authToken = token;
   }
 
   public clearAuthToken(): void {
-    delete this.apiClient.defaults.headers.common['Authorization'];
+    this.authToken = undefined;
   }
 
   public updateBaseURL(baseURL: string): void {
-    this.apiClient.defaults.baseURL = baseURL;
+    this.baseURL = baseURL;
   }
 
-  public getApiClient(): AxiosInstance {
-    return this.apiClient;
-  }
+  // getApiClient removed because we no longer expose axios instance
 }
 
 // Export singleton instance

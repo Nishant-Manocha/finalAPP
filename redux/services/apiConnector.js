@@ -1,14 +1,17 @@
-import axios from "axios";
 import { secureApiService } from "../../utils/apiSecurity";
 
-export const axiosInstance = secureApiService.getApiClient();
-
-export const apiConnector = (method, url, bodyData, headers, params) => {
-  return axiosInstance({
-    method,
-    url,
-    data: bodyData || null,
-    headers: headers || {},
-    params: params || null,
-  });
+export const apiConnector = async (method, url, bodyData, headers, params) => {
+  const config = { headers, params };
+  switch ((method || 'GET').toUpperCase()) {
+    case 'GET':
+      return await secureApiService.secureGet(url, config);
+    case 'POST':
+      return await secureApiService.securePost(url, bodyData, config);
+    case 'PUT':
+      return await secureApiService.securePut(url, bodyData, config);
+    case 'DELETE':
+      return await secureApiService.secureDelete(url, config);
+    default:
+      return await secureApiService.secureGet(url, config);
+  }
 };
